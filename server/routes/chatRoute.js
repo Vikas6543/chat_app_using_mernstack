@@ -1,0 +1,150 @@
+const express = require('express');
+const authMiddleware = require('../middleware/authMiddleware');
+const router = express.Router();
+const Chat = require('../models/chatModel');
+const User = require('../models/userModel');
+
+// create one to one chat
+router.post('/', authMiddleware, async (req, res) => {
+  const { userId } = req.body;
+
+  if (!userId) {
+    console.log('UserId param not sent with request');
+    return res.sendStatus(400);
+  }
+
+  var isChat = await Chat.find({
+    isGroupChat: false,
+    $and: [
+      { users: { $elemMatch: { $eq: req.user._id } } },
+      { users: { $elemMatch: { $eq: userId } } },
+    ],
+  })
+    .populate('users', '-password')
+    .populate('latestMessage');
+
+  isChat = await User.populate(isChat, {
+    path: 'latestMessage.sender',
+    select: 'userName email profilePicture',
+  });
+
+  if (isChat.length > 0) {
+    res.send(isChat[0]);
+  } else {
+    var chatData = {
+      chatName: 'sender',
+      isGroupChat: false,
+      users: [req.user._id, userId],
+    };
+
+    try {
+      const createdChat = await Chat.create(chatData);
+      const FullChat = await Chat.findOne({ _id: createdChat._id }).populate(
+        'users',
+        '-password'
+      );
+      res.status(200).json(FullChat);
+    } catch (error) {
+      res.status(400);
+      throw new Error(error.message);
+    }
+  }
+});
+
+// get all chats
+router.get('/', authMiddleware, async (req, res) => {
+  try {
+    const chats = await Chat.find({
+      users: {
+        $elemMatch: {
+          $eq: req.user._id,
+        },
+      },
+    })
+      .populate('users', '-password')
+      .populate('latestMessage')
+      .populate('isGroupAdmin', '-password')
+      .sort({ updatedAt: -1 });
+
+    const FullChats = await User.populate(chats, {
+      path: 'latestMessage.sender',
+      select: 'userName email profilePicture',
+    });
+
+    res.status(200).json(FullChats);
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message,
+    });
+  }
+});
+
+// create group chat
+router.post('/group', authMiddleware, async (req, res) => {
+  if (!req.body.users || !req.body.name) {
+    return res.status(400).send({ message: 'Please Fill all the feilds' });
+  }
+
+  var users = JSON.parse(req.body.users);
+
+  if (users.length < 2) {
+    return res
+      .status(400)
+      .send({ message: 'Please select atleast two users to create group' });
+  }
+
+  // all users along with the logged in user
+  users.push(req.user);
+
+  try {
+    const groupChat = await Chat.create({
+      chatName: req.body.name,
+      users: users,
+      isGroupChat: true,
+      groupAdmin: req.user,
+    });
+
+    const fullGroupChat = await Chat.findOne({ _id: groupChat._id })
+      .populate('users', '-password')
+      .populate('groupAdmin', '-password');
+
+    res.status(200).send({ groupChat: fullGroupChat });
+  } catch (error) {
+    res.status(400).send({ message: error.message });
+  }
+});
+
+// rename group chat
+router.put('/group/:id', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const { name } = req.body;
+
+  if (!id) {
+    return res.status(400).send({ message: 'Please provide group id' });
+  }
+
+  try {
+    const groupChat = await Chat.findOne({ _id: id });
+    if (!groupChat) {
+      return res.status(400).send({ message: 'Group not found' });
+    }
+    if (groupChat.groupAdmin.toString() !== req.user._id.toString()) {
+      return res
+        .status(400)
+        .send({ message: 'You are not the admin of this group' });
+    }
+    groupChat.chatName = name;
+    await groupChat.save();
+    const fullGroupChat = await Chat.findOne({ _id: groupChat._id })
+      .populate('users', '-password')
+      .populate('groupAdmin', '-password');
+    res.status(200).send({ groupChat: fullGroupChat });
+  } catch (error) {
+    res.status(400).send({ message: error.message });
+  }
+});
+
+// remove user from group chat
+router.delete('/group/:id', authMiddleware, async (req, res) => {
+
+module.exports = router;
